@@ -147,6 +147,7 @@ label.field > span { display: block; font-size: 14px; color: var(--muted); margi
 .learn { min-height: 100dvh; display: flex; flex-direction: column; }
 .learn-image-wrap { flex: 1; padding: 12px 12px calc(var(--safe-bottom) + 96px); display: flex; justify-content: center; }
 .learn-image {
+  cursor: zoom-in;
   display: block; width: 100%; max-width: 520px; height: auto; border-radius: 12px;
   background: var(--surface-2); box-shadow: var(--shadow);
 }
@@ -181,16 +182,34 @@ label.field > span { display: block; font-size: 14px; color: var(--muted); margi
 .done h2 { margin: 8px 0; }
 .done p { color: var(--muted); }
 
-/* Vollbild-Zoom */
+/* Vollbild-Ansicht */
+body.no-scroll { overflow: hidden; }
 .zoom {
-  position: fixed; inset: 0; z-index: 50; background: #000; overflow: auto; -webkit-overflow-scrolling: touch;
-  display: flex; align-items: flex-start; justify-content: center;
+  position: fixed; inset: 0; z-index: 50; background: #000; overflow: hidden;
+  padding-top: var(--safe-top); padding-bottom: calc(var(--safe-bottom) + 76px);
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
-.zoom img { width: 100%; max-width: none; height: auto; }
-.zoom.wide img { width: 200%; }
-.zoom-close {
-  position: fixed; top: calc(var(--safe-top) + 10px); right: 12px; z-index: 51;
-  width: 44px; height: 44px; border-radius: 22px; border: 0; background: rgba(255,255,255,.2); color: #fff; font-size: 22px;
+.zoom img {
+  position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0;
+  pointer-events: none; -webkit-user-drag: none;
+}
+.zoom-back {
+  position: fixed; left: 50%; bottom: calc(var(--safe-bottom) + 14px); transform: translateX(-50%); z-index: 52;
+  display: inline-flex; align-items: center; gap: 6px; min-height: 50px; padding: 0 24px 0 16px;
+  border: 1px solid rgba(255,255,255,.18); border-radius: 999px; background: rgba(40,40,44,.88); color: #fff;
+  font-size: 16px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+}
+.zoom-back svg { width: 20px; height: 20px; }
+.zoom-level {
+  position: fixed; top: calc(var(--safe-top) + 14px); left: 50%; transform: translateX(-50%); z-index: 52;
+  padding: 4px 12px; border-radius: 999px; background: rgba(40,40,44,.88); color: #fff; font-size: 14px;
+  font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.zoom-hint {
+  position: fixed; left: 16px; right: 16px; bottom: calc(var(--safe-bottom) + 80px); z-index: 52; margin: 0 auto; max-width: 420px;
+  padding: 10px 14px; border-radius: 12px; background: rgba(40,40,44,.92); color: #fff; font-size: 14px; text-align: center;
+  pointer-events: none;
 }
 
 /* ---------- Hochladen ---------- */

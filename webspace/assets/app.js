@@ -196,7 +196,7 @@ async function viewLearn(params) {
       </nav>
     </div>`;
     shownAt = performance.now();
-    document.getElementById('learn-img').addEventListener('click', () => openZoom(c.image));
+    document.getElementById('learn-img').addEventListener('click', () => openZoom(c.image, { backLabel: 'Zur Bewertung' }));
     document.getElementById('rating').addEventListener('click', e => {
       const b = e.target.closest('.rate');
       if (b) rate(Number(b.dataset.g));
@@ -234,26 +234,257 @@ async function viewLearn(params) {
   }
 
   function onKey(e) {
-    if (document.querySelector('.zoom')) return;
+    if (activeViewer) { // im Vollbild: Zahl schließt und bewertet direkt
+      if (['1', '2', '3', '4'].includes(e.key)) { closeZoom(); rate(Number(e.key)); }
+      return;
+    }
     if (['1', '2', '3', '4'].includes(e.key)) rate(Number(e.key));
     else if (e.key === ' ') { e.preventDefault(); rate(3); }
     else if (e.key === 'z' || e.key === 'u') undo();
   }
   document.addEventListener('keydown', onKey);
-  cleanup = () => { document.removeEventListener('keydown', onKey); clearTimeout(refreshTimer); closeZoom(); };
+  cleanup = () => { document.removeEventListener('keydown', onKey); clearTimeout(refreshTimer); closeZoom(); zoomMemory.clear(); };
 
   await load();
 }
 
-function openZoom(src) {
-  const z = document.createElement('div');
-  z.className = 'zoom';
-  z.innerHTML = `<img src="${src}" alt=""><button class="zoom-close" aria-label="Schließen">×</button>`;
-  z.querySelector('img').addEventListener('click', () => z.classList.toggle('wide'));
-  z.querySelector('.zoom-close').addEventListener('click', closeZoom);
-  document.body.appendChild(z);
+// ===================== Vollbild-Ansicht =====================
+// Tippen: zurück · Doppeltippen: zoomen/zurück · Doppeltippen, halten und ziehen: stufenlos zoomen (ein Finger)
+// Zwei Finger: zoomen · Ziehen: verschieben (mit Schwung) · Mausrad/Trackpad am Rechner
+const zoomMemory = new Map(); // Bild → letzte Zoomstufe und Position, damit Hin- und Herwechseln nichts verliert
+let activeViewer = null;
+
+function openZoom(src, { backLabel = 'Zurück' } = {}) {
+  closeZoom();
+  const el = document.createElement('div');
+  el.className = 'zoom';
+  el.innerHTML = `<img alt="" draggable="false">
+    <div class="zoom-level" hidden></div>
+    <div class="zoom-hint" hidden>Tippen: zurück · Doppeltippen: zoomen<br>Doppeltippen, halten und hoch/runter ziehen: stufenlos</div>
+    <button class="zoom-back" type="button">${ICON.back}<span>${esc(backLabel)}</span></button>`;
+  document.body.appendChild(el);
+  document.body.classList.add('no-scroll');
+  const img = el.querySelector('img');
+  const levelEl = el.querySelector('.zoom-level');
+  const MAX = 6;
+  let W = 0, H = 0, padT = 0, padB = 0, baseW = 1, baseH = 1;
+  let st = { s: 1, tx: 0, ty: 0 };
+  let ready = false;
+
+  function measure() {
+    const cs = getComputedStyle(el);
+    W = el.clientWidth;
+    H = el.clientHeight;
+    padT = parseFloat(cs.paddingTop) || 0;
+    padB = parseFloat(cs.paddingBottom) || 0;
+    const nw = img.naturalWidth || 1, nh = img.naturalHeight || 1;
+    baseW = Math.min(W, Math.max(nw, 600)); // Zoom 100 % = volle Bildschirmbreite (am großen Monitor nicht riesig)
+    baseH = baseW * nh / nw;
+  }
+  function clamp(t) {
+    t.s = Math.min(MAX, Math.max(1, t.s));
+    const cw = baseW * t.s, ch = baseH * t.s, availH = H - padT - padB;
+    t.tx = cw <= W ? (W - cw) / 2 : Math.min(0, Math.max(W - cw, t.tx));
+    t.ty = ch <= availH ? padT + (availH - ch) / 2 : Math.min(padT, Math.max(padT + availH - ch, t.ty));
+    return t;
+  }
+  // Zoom auf newS, wobei der Bildpunkt unter (px, py) an seinem Platz bleibt
+  function zoomed(from, newS, px, py) {
+    const s = Math.min(MAX, Math.max(1, newS));
+    return clamp({ s, tx: px - (px - from.tx) * s / from.s, ty: py - (py - from.ty) * s / from.s });
+  }
+  let levelTimer;
+  function apply(showLevel = false) {
+    img.style.width = baseW * st.s + 'px';
+    img.style.height = baseH * st.s + 'px';
+    img.style.transform = `translate(${st.tx}px, ${st.ty}px)`;
+    if (showLevel) {
+      levelEl.textContent = Math.round(st.s * 100) + ' %';
+      levelEl.hidden = false;
+      clearTimeout(levelTimer);
+      levelTimer = setTimeout(() => (levelEl.hidden = true), 700);
+    }
+  }
+  let raf = null;
+  function stopAnim() { cancelAnimationFrame(raf); raf = null; }
+  function animateTo(target) {
+    stopAnim();
+    const from = { ...st }, t0 = performance.now(), dur = 220;
+    const step = now => {
+      const k = Math.min(1, (now - t0) / dur), e = 1 - (1 - k) ** 3;
+      st = { s: from.s + (target.s - from.s) * e, tx: from.tx + (target.tx - from.tx) * e, ty: from.ty + (target.ty - from.ty) * e };
+      apply(true);
+      if (k < 1) raf = requestAnimationFrame(step); else { raf = null; save(); }
+    };
+    raf = requestAnimationFrame(step);
+  }
+  function glide(vx, vy) { // Schwung nach dem Loslassen
+    stopAnim();
+    let last = performance.now();
+    const step = now => {
+      const dt = Math.min(32, now - last);
+      last = now;
+      const before = { ...st };
+      st = clamp({ s: st.s, tx: st.tx + vx * dt, ty: st.ty + vy * dt });
+      apply();
+      const f = Math.pow(0.94, dt / 16);
+      vx = st.tx === before.tx ? 0 : vx * f;
+      vy = st.ty === before.ty ? 0 : vy * f;
+      if (Math.abs(vx) + Math.abs(vy) > 0.02) raf = requestAnimationFrame(step); else { raf = null; save(); }
+    };
+    raf = requestAnimationFrame(step);
+  }
+  function save() { zoomMemory.set(src, { ...st }); }
+
+  function init() {
+    measure();
+    const mem = zoomMemory.get(src);
+    st = clamp(mem ? { ...mem } : { s: 1, tx: 0, ty: padT });
+    apply();
+    ready = true;
+  }
+  img.addEventListener('load', init);
+  img.src = src;
+  if (img.complete && img.naturalWidth) init();
+
+  // ---- Gesten ----
+  const pts = new Map();
+  let mode = null, start = null, moved = false, tapTimer = null;
+  let lastTap = { t: 0, x: 0, y: 0 };
+  let track = []; // letzte Bewegungen für den Schwung
+
+  el.addEventListener('pointerdown', e => {
+    if (!ready || e.target.closest('.zoom-back')) return;
+    try { el.setPointerCapture(e.pointerId); } catch { /* z. B. bereits beendeter Zeiger */ }
+    el.querySelector('.zoom-hint').hidden = true;
+    stopAnim();
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const now = performance.now();
+    if (pts.size === 1) {
+      moved = false;
+      clearTimeout(tapTimer);
+      const isDouble = now - lastTap.t < 300 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 45;
+      if (isDouble) {
+        mode = 'tapzoom';
+        start = { y: e.clientY, ax: lastTap.x, ay: lastTap.y, st: { ...st } };
+        lastTap.t = 0;
+      } else {
+        mode = 'pan';
+        start = { x: e.clientX, y: e.clientY, st: { ...st } };
+      }
+      track = [{ t: now, x: e.clientX, y: e.clientY }];
+    } else if (pts.size === 2) {
+      clearTimeout(tapTimer);
+      moved = true;
+      const [a, b] = [...pts.values()];
+      mode = 'pinch';
+      start = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, st: { ...st } };
+    }
+  });
+
+  el.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (mode === 'pan') {
+      const dx = e.clientX - start.x, dy = e.clientY - start.y;
+      if (!moved && Math.hypot(dx, dy) > 8) moved = true;
+      if (!moved) return;
+      st = clamp({ s: st.s, tx: start.st.tx + dx, ty: start.st.ty + dy });
+      apply();
+      const now = performance.now();
+      track.push({ t: now, x: e.clientX, y: e.clientY });
+      while (track.length > 2 && now - track[0].t > 100) track.shift();
+    } else if (mode === 'tapzoom') {
+      const dy = e.clientY - start.y;
+      if (!moved && Math.abs(dy) > 8) moved = true;
+      if (!moved) return;
+      st = zoomed(start.st, start.st.s * Math.exp(dy * 0.012), start.ax, start.ay); // runter = größer
+      apply(true);
+    } else if (mode === 'pinch' && pts.size >= 2) {
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      const s = Math.min(MAX, Math.max(1, start.st.s * d / start.d));
+      const cx = (start.mx - start.st.tx) / start.st.s, cy = (start.my - start.st.ty) / start.st.s;
+      st = clamp({ s, tx: mx - cx * s, ty: my - cy * s });
+      apply(true);
+    }
+  });
+
+  function onUp(e) {
+    if (!pts.has(e.pointerId)) return;
+    pts.delete(e.pointerId);
+    const now = performance.now();
+    if (mode === 'pinch') {
+      if (pts.size === 1) { // mit dem verbleibenden Finger weiter verschieben
+        const [p] = [...pts.values()];
+        mode = 'pan';
+        start = { x: p.x, y: p.y, st: { ...st } };
+        track = [{ t: now, x: p.x, y: p.y }];
+      } else { mode = null; save(); }
+      return;
+    }
+    if (mode === 'tapzoom') {
+      if (!moved) {
+        // Doppeltipp: vergrößern an der Stelle bzw. zurück auf ganze Breite
+        animateTo(zoomed(st, st.s > 1.05 ? 1 : 2.5, start.ax, start.ay));
+      } else save();
+      mode = null;
+      return;
+    }
+    if (mode === 'pan') {
+      if (!moved && e.type === 'pointerup') {
+        lastTap = { t: now, x: e.clientX, y: e.clientY };
+        tapTimer = setTimeout(closeZoom, 300); // einfacher Tipp: zurück
+      } else if (moved) {
+        const a = track[0], b = track[track.length - 1];
+        const dt = b.t - a.t;
+        if (dt > 0 && now - b.t < 80) glide((b.x - a.x) / dt, (b.y - a.y) / dt); else save();
+      }
+      mode = null;
+    }
+  }
+  el.addEventListener('pointerup', onUp);
+  el.addEventListener('pointercancel', onUp);
+  el.addEventListener('gesturestart', e => e.preventDefault()); // Safari: Seite nicht mitzoomen
+  el.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (!ready) return;
+    stopAnim();
+    st = e.ctrlKey
+      ? zoomed(st, st.s * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY)
+      : clamp({ s: st.s, tx: st.tx - e.deltaX, ty: st.ty - e.deltaY });
+    apply(e.ctrlKey);
+    save();
+  }, { passive: false });
+  el.querySelector('.zoom-back').addEventListener('click', closeZoom);
+
+  const onResize = () => { if (ready) { measure(); st = clamp(st); apply(); } };
+  window.addEventListener('resize', onResize);
+
+  try {
+    const n = Number(localStorage.getItem('lk_zoom_hint') || 0);
+    if (n < 3) {
+      localStorage.setItem('lk_zoom_hint', String(n + 1));
+      const hint = el.querySelector('.zoom-hint');
+      hint.hidden = false;
+      setTimeout(() => (hint.hidden = true), 4000);
+    }
+  } catch { /* ohne Speicher kein Hinweis */ }
+
+  activeViewer = {
+    close() {
+      stopAnim();
+      clearTimeout(tapTimer);
+      if (ready) save();
+      window.removeEventListener('resize', onResize);
+      el.remove();
+      document.body.classList.remove('no-scroll');
+    },
+  };
 }
-function closeZoom() { document.querySelector('.zoom')?.remove(); }
+function closeZoom() {
+  if (activeViewer) { activeViewer.close(); activeViewer = null; }
+}
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeZoom(); });
 
 // ===================== Hochladen =====================
