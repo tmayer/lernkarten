@@ -1,0 +1,20 @@
+Options -Indexes
+AddDefaultCharset utf-8
+DirectoryIndex index.php
+
+<IfModule mod_headers.c>
+    <FilesMatch "\.(js|css|json)$">
+        Header set Cache-Control "no-cache"
+    </FilesMatch>
+</IfModule>
+
+# Versteckte Dateien nie ausliefern
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

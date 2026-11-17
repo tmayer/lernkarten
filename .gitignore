@@ -1,0 +1,7 @@
+webspace/lib/config.php
+webspace/data/*
+!webspace/data/.htaccess
+testdaten/
+.DS_Store
+testumgebung/
+__pycache__/

@@ -1,0 +1,101 @@
+# Prüft die App bei jedem Push und spielt sie bei Änderungen auf main per SFTP nach IONOS.
+# Benötigte Secrets (Settings → Secrets and variables → Actions):
+#   IONOS_SFTP_HOST         z. B. access-1234567890.webspace-host.com
+#   IONOS_SFTP_USER         SFTP-Benutzer aus dem IONOS-Kundenbereich
+#   IONOS_SFTP_PASSWORD     zugehöriges Passwort
+#   IONOS_TARGET_DIR        Zielordner auf dem Webspace, z. B. /tools/lernkarten
+# Optional:
+#   LK_PASSWORD_HASH        Hash des App-Passworts (von werkzeuge/passwort_setzen.py). Ist er gesetzt,
+#                           schreibt der Deploy daraus lib/config.php; sonst bleibt die config.php auf dem Server.
+# Der Hostschlüssel des Servers ist unten als Fingerabdruck fest eingetragen (öffentliche Information).
+# Ändert IONOS den Schlüssel, bricht der Deploy ab; dann neuen Wert prüfen mit:
+#   ssh-keyscan -t ed25519 <host> | ssh-keygen -lf -
+# Nie überschrieben oder gelöscht wird data/ (Datenbank mit Lernstand und alle Bilder).
+name: Prüfen und deployen
+
+on:
+  push:
+    branches: [main]
+    paths: ['webspace/**', '.github/workflows/deploy.yml']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ionos-lernkarten
+  cancel-in-progress: false
+
+jobs:
+  pruefen:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: PHP-Syntax
+        run: for f in webspace/*.php webspace/lib/*.php; do php -l "$f"; done
+      - name: JavaScript-Syntax
+        run: node --check webspace/assets/app.js
+      - name: Schutz von lib/ und data/ vorhanden
+        run: |
+          grep -q "Require all denied" webspace/lib/.htaccess
+          grep -q "Require all denied" webspace/data/.htaccess
+      - name: Keine Geheimnisse oder Daten im Repository
+        run: |
+          bad=$(git ls-files | grep -Ev '^webspace/data/\.htaccess$' | grep -E '^webspace/lib/config\.php$|^webspace/data/|\.sqlite$|^testumgebung/' || true)
+          [ -z "$bad" ] || { echo "::error::Diese Dateien gehören nicht ins Repository: $bad"; exit 1; }
+
+  deployen:
+    needs: pruefen
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    environment: ionos
+    steps:
+      - uses: actions/checkout@v5
+      - name: lftp installieren
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+      - name: Hostschlüssel holen und prüfen
+        env:
+          HOST: ${{ secrets.IONOS_SFTP_HOST }}
+          FINGERPRINT: SHA256:1gx2w8Rtv3wCgi7Jh8myf/KVd72cRQbow03UP8P095Q   # ED25519-Schlüssel des IONOS-SFTP-Servers
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -t ed25519 -p 22 "$HOST" 2>/dev/null > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          got=$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')
+          echo "Server: $got"
+          [ "$got" = "$FINGERPRINT" ] || { echo "::error::Hostschlüssel des Servers ($got) passt nicht zum eingetragenen Fingerabdruck. Nichts hochgeladen."; exit 1; }
+      - name: config.php aus Secret erzeugen
+        env:
+          PW_HASH: ${{ secrets.LK_PASSWORD_HASH }}
+        run: |
+          if [ -z "$PW_HASH" ]; then
+            echo "LK_PASSWORD_HASH nicht gesetzt – lib/config.php auf dem Server bleibt unverändert."
+            exit 0
+          fi
+          echo "$PW_HASH" | grep -Eq '^pbkdf2_sha256\$[0-9]+\$[0-9a-f]+\$[0-9a-f]{64}$' \
+            || { echo "::error::LK_PASSWORD_HASH hat nicht das erwartete Format (pbkdf2_sha256\$…)."; exit 1; }
+          mkdir -p "$RUNNER_TEMP/lk"
+          printf "<?php\n// Erzeugt beim Deploy aus dem Secret LK_PASSWORD_HASH.\nreturn [\n    'password_hash' => '%s',\n    'timezone'      => 'Europe/Berlin',\n];\n" "$PW_HASH" > "$RUNNER_TEMP/lk/config.php"
+          php -l "$RUNNER_TEMP/lk/config.php"
+      - name: Per SFTP hochladen
+        env:
+          HOST: ${{ secrets.IONOS_SFTP_HOST }}
+          USER: ${{ secrets.IONOS_SFTP_USER }}
+          LFTP_PASSWORD: ${{ secrets.IONOS_SFTP_PASSWORD }}
+          DIR: ${{ secrets.IONOS_TARGET_DIR }}
+        run: |
+          [ -n "$DIR" ] || { echo "::error::IONOS_TARGET_DIR fehlt."; exit 1; }
+          CONFIG_CMD=""
+          if [ -f "$RUNNER_TEMP/lk/config.php" ]; then
+            CONFIG_CMD="put '$RUNNER_TEMP/lk/config.php' -o '$DIR/lib/config.php';"
+          fi
+          # App ohne Löschen spiegeln; data/ (Lernstand, Bilder) und lib/config.php bleiben unberührt.
+          # data/.htaccess wird einzeln hochgeladen, damit der Ordner auch beim ersten Deploy geschützt ist.
+          lftp --env-password -u "$USER" "sftp://$HOST" -e "
+            set sftp:auto-confirm no;
+            set net:max-retries 2;
+            mirror --reverse --verbose \
+              --exclude-glob .DS_Store --exclude ^lib/config\.php$ --exclude ^data/ \
+              webspace/ '$DIR/';
+            mkdir -pf '$DIR/data';
+            put webspace/data/.htaccess -o '$DIR/data/.htaccess';
+            $CONFIG_CMD
+            quit"
