@@ -48,10 +48,26 @@ jobs:
     runs-on: ubuntu-24.04
     environment: ionos
     steps:
+      - name: Zugangsdaten vorhanden?
+        id: check
+        env:
+          HOST: ${{ secrets.IONOS_SFTP_HOST }}
+          USER: ${{ secrets.IONOS_SFTP_USER }}
+          PASS: ${{ secrets.IONOS_SFTP_PASSWORD }}
+          DIR: ${{ secrets.IONOS_TARGET_DIR }}
+        run: |
+          if [ -n "$HOST" ] && [ -n "$USER" ] && [ -n "$PASS" ] && [ -n "$DIR" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::IONOS-Secrets fehlen noch (siehe ANLEITUNG_IONOS.md) – Deploy übersprungen."
+          fi
       - uses: actions/checkout@v5
+        if: steps.check.outputs.ok == 'true'
       - name: lftp installieren
+        if: steps.check.outputs.ok == 'true'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
       - name: Hostschlüssel holen und prüfen
+        if: steps.check.outputs.ok == 'true'
         env:
           HOST: ${{ secrets.IONOS_SFTP_HOST }}
           FINGERPRINT: SHA256:1gx2w8Rtv3wCgi7Jh8myf/KVd72cRQbow03UP8P095Q   # ED25519-Schlüssel des IONOS-SFTP-Servers
@@ -63,6 +79,7 @@ jobs:
           echo "Server: $got"
           [ "$got" = "$FINGERPRINT" ] || { echo "::error::Hostschlüssel des Servers ($got) passt nicht zum eingetragenen Fingerabdruck. Nichts hochgeladen."; exit 1; }
       - name: config.php aus Secret erzeugen
+        if: steps.check.outputs.ok == 'true'
         env:
           PW_HASH: ${{ secrets.LK_PASSWORD_HASH }}
         run: |
@@ -76,6 +93,7 @@ jobs:
           printf "<?php\n// Erzeugt beim Deploy aus dem Secret LK_PASSWORD_HASH.\nreturn [\n    'password_hash' => '%s',\n    'timezone'      => 'Europe/Berlin',\n];\n" "$PW_HASH" > "$RUNNER_TEMP/lk/config.php"
           php -l "$RUNNER_TEMP/lk/config.php"
       - name: Per SFTP hochladen
+        if: steps.check.outputs.ok == 'true'
         env:
           HOST: ${{ secrets.IONOS_SFTP_HOST }}
           USER: ${{ secrets.IONOS_SFTP_USER }}
