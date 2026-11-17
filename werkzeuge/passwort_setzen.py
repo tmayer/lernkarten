@@ -38,6 +38,7 @@ print(f'Gespeichert in {os.path.normpath(TARGET)} (für die Testumgebung und man
 
 # Für den automatischen Deploy: Hash als GitHub-Secret hinterlegen
 pw_hash = f'pbkdf2_sha256${ITERATIONS}${salt}${digest}'
+print(f'Kennung dieses Passworts: {hashlib.sha256(pw_hash.encode()).hexdigest()[:12]}  (steht nach dem Deploy auch im GitHub-Log)')
 if shutil.which('gh') and input('Als GitHub-Secret LK_PASSWORD_HASH für den Deploy setzen? [j/N] ').strip().lower() in ('j', 'ja', 'y'):
     repo_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
     r = subprocess.run(['gh', 'secret', 'set', 'LK_PASSWORD_HASH'], input=pw_hash, text=True, cwd=repo_dir,

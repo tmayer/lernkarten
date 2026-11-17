@@ -92,6 +92,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/lk"
           printf "<?php\n// Erzeugt beim Deploy aus dem Secret LK_PASSWORD_HASH.\nreturn [\n    'password_hash' => '%s',\n    'timezone'      => 'Europe/Berlin',\n];\n" "$PW_HASH" > "$RUNNER_TEMP/lk/config.php"
           php -l "$RUNNER_TEMP/lk/config.php"
+          echo "Kennung des Passworts: $(printf '%s' "$PW_HASH" | sha256sum | cut -c1-12)"
       - name: Per SFTP hochladen
         if: steps.check.outputs.ok == 'true'
         env:
